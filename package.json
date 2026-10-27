@@ -1,0 +1,53 @@
+{
+  "name": "fetch-retry-jitter",
+  "version": "1.0.0",
+  "description": "Zero-dependency fetch wrapper with exponential backoff, full jitter, and Retry-After support for Node 22+, Bun, Deno, Cloudflare Workers, and browsers.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --clean --minify",
+    "test": "vitest run",
+    "prepublishOnly": "npm run test && npm run build"
+  },
+  "keywords": [
+    "fetch",
+    "retry",
+    "jitter",
+    "exponential-backoff",
+    "backoff",
+    "retry-after",
+    "edge",
+    "cloudflare-workers",
+    "serverless",
+    "zero-dependency"
+  ],
+  "author": "Michael Gill",
+  "license": "MIT",
+  "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noble2I/fetch-retry-jitter.git"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
