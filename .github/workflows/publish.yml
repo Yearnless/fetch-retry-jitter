@@ -30,6 +30,11 @@ jobs:
       - name: Run tests
         run: npm test
 
+      - name: Configure npm auth
+        run: npm config set //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Build
         run: npm run build
 
