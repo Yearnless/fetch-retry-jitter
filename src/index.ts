@@ -12,6 +12,11 @@ export interface RetryOptions {
   baseDelayMs?: number;
   /** Upper bound for every backoff window (including Retry-After). Default: 5000 */
   maxDelayMs?: number;
+  /**
+   * Total timeout per request attempt in milliseconds (including redirects).
+   * Applies to each attempt independently; aborts that attempt if exceeded.
+   */
+  timeoutMs?: number;
   /** HTTP status codes that trigger a retry. Replaces the default set. */
   statusCodes?: number[];
   /**
@@ -70,21 +75,38 @@ export async function fetchRetry(
   init?: RequestInit,
   options: RetryOptions = {}
 ): Promise<Response> {
-  const { retries = 3, baseDelayMs = 300, maxDelayMs = 5000, statusCodes, onRetry } = options;
+  const { retries = 3, baseDelayMs = 300, maxDelayMs = 5000, statusCodes, onRetry, timeoutMs } = options;
   const retryableSet = statusCodes ? new Set(statusCodes) : DEFAULT_RETRYABLE_STATUSES;
   const signal = init?.signal ?? undefined;
-  // A ReadableStream body can be consumed exactly once; replaying `init` on a
-  // retry would send a dead body. Such requests are never retried.
   const canReplayBody = !(typeof ReadableStream !== 'undefined' && init?.body instanceof ReadableStream);
   let attempt = 0;
 
   for (;;) {
     let response: Response;
     try {
-      response = await fetch(input, init);
+      // Create combined abort signal if timeoutMs is specified
+      const controller = new AbortController();
+      const signals = [signal].filter(Boolean) as AbortSignal[];
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+      if (timeoutMs !== undefined) {
+        const timeoutController = new AbortController();
+        const timeoutId = setTimeout(() => timeoutController.abort(), timeoutMs);
+        signals.push(timeoutController.signal);
+        // Clean up timeout if the combined signal aborts for another reason
+        signal?.addEventListener('abort', () => clearTimeout(timeoutId), { once: true });
+      }
+
+      for (const s of signals) {
+        s.addEventListener('abort', () => controller.abort(), { once: true });
+      }
+
+      response = await fetch(input, { ...init, signal: controller.signal });
     } catch (error) {
-      // Never retry caller-initiated aborts or unreplayable requests.
-      if (attempt >= retries || signal?.aborted || !canReplayBody) throw error;
+      // Don't retry if aborted by our own timeout or caller signal
+      const abortedByUs = error instanceof DOMException && error.name === 'AbortError' &&
+        (timeoutMs !== undefined || signal?.aborted);
+      if (attempt >= retries || signal?.aborted || !canReplayBody || abortedByUs) throw error;
       const delay = calculateJitterDelay(attempt, baseDelayMs, maxDelayMs);
       onRetry?.(error, attempt + 1, delay);
       await sleep(delay, signal);
