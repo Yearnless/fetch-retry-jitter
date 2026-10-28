@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -23,7 +24,8 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --clean --minify",
     "test": "vitest run",
-    "prepublishOnly": "npm run test && npm run build"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm run test && npm run build"
   },
   "keywords": [
     "fetch",
@@ -48,6 +50,6 @@
     "@types/node": "^22.10.2",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^3.0.0"
   }
 }

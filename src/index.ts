@@ -14,8 +14,21 @@ export interface RetryOptions {
   maxDelayMs?: number;
   /** HTTP status codes that trigger a retry. Replaces the default set. */
   statusCodes?: number[];
-  /** Invoked before each backoff sleep. */
+  /**
+   * Invoked before each backoff sleep. For HTTP-triggered retries the error is
+   * a {@link RetryError} carrying the status code, so consumers can branch
+   * without parsing the message. Network failures pass the original error.
+   */
   onRetry?: (error: unknown, attempt: number, delayMs: number) => void;
+}
+
+/**
+ * Error passed to `onRetry` when a retry was triggered by an HTTP status.
+ * `status` allows branching on the status code without parsing messages.
+ */
+export interface RetryError extends Error {
+  /** HTTP status code that triggered the retry. */
+  status: number;
 }
 
 const DEFAULT_RETRYABLE_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
@@ -60,6 +73,9 @@ export async function fetchRetry(
   const { retries = 3, baseDelayMs = 300, maxDelayMs = 5000, statusCodes, onRetry } = options;
   const retryableSet = statusCodes ? new Set(statusCodes) : DEFAULT_RETRYABLE_STATUSES;
   const signal = init?.signal ?? undefined;
+  // A ReadableStream body can be consumed exactly once; replaying `init` on a
+  // retry would send a dead body. Such requests are never retried.
+  const canReplayBody = !(typeof ReadableStream !== 'undefined' && init?.body instanceof ReadableStream);
   let attempt = 0;
 
   for (;;) {
@@ -67,8 +83,8 @@ export async function fetchRetry(
     try {
       response = await fetch(input, init);
     } catch (error) {
-      // Never retry caller-initiated aborts.
-      if (attempt >= retries || signal?.aborted) throw error;
+      // Never retry caller-initiated aborts or unreplayable requests.
+      if (attempt >= retries || signal?.aborted || !canReplayBody) throw error;
       const delay = calculateJitterDelay(attempt, baseDelayMs, maxDelayMs);
       onRetry?.(error, attempt + 1, delay);
       await sleep(delay, signal);
@@ -77,6 +93,7 @@ export async function fetchRetry(
     }
 
     if (attempt < retries && retryableSet.has(response.status)) {
+      if (!canReplayBody) return response;
       // Release the connection before sleeping.
       try {
         await response.body?.cancel();
@@ -89,7 +106,10 @@ export async function fetchRetry(
         headerDelay === null
           ? calculateJitterDelay(attempt, baseDelayMs, maxDelayMs)
           : Math.min(headerDelay, maxDelayMs);
-      onRetry?.(new Error(`HTTP ${response.status}`), attempt + 1, delay);
+      const retryErr: RetryError = Object.assign(new Error(`HTTP ${response.status}`), {
+        status: response.status,
+      });
+      onRetry?.(retryErr, attempt + 1, delay);
       await sleep(delay, signal);
       attempt++;
       continue;

@@ -38,6 +38,13 @@ const res = await fetchRetry(
 );
 ```
 
+CommonJS:
+
+```js
+const { fetchRetry } = require('fetch-retry-jitter');
+// or: const fetchRetry = require('fetch-retry-jitter').default;
+```
+
 ## Options
 
 | Option | Type | Default | Description |
@@ -46,19 +53,33 @@ const res = await fetchRetry(
 | `baseDelayMs` | `number` | `300` | First backoff window, in milliseconds. |
 | `maxDelayMs` | `number` | `5000` | Hard cap on every backoff window — **including** `Retry-After`. |
 | `statusCodes` | `number[]` | `[408, 429, 500, 502, 503, 504]` | Statuses that trigger a retry (replaces the default set). |
-| `onRetry` | `(error, attempt, delayMs) => void` | — | Invoked before each backoff sleep. |
+| `onRetry` | `(error, attempt, delayMs) => void` | — | Invoked before each backoff sleep. HTTP-triggered retries pass a `RetryError` with the status code; network failures pass the original error. |
 
 ## Retry semantics
 
 - **Full jitter** — each backoff delay is drawn uniformly from `[0, min(maxDelayMs, baseDelayMs · 2^attempt))`, the "full jitter" variant recommended in AWS's *Exponential Backoff and Jitter* guidance. Full (rather than "equal") jitter spreads retries across the whole window, which is what prevents synchronized retry storms.
 - **`Retry-After` wins** — when a retryable response carries `Retry-After` (delay-seconds or HTTP-date), that exact value is used, clamped by `maxDelayMs` so a hostile server can't stall your worker.
 - **Network errors retry too** — connection resets and DNS failures are retried like transient 5xx responses.
+- **Exhaustion asymmetry** — after the final attempt, a persistent *network* error rejects, while a persistent retryable *status* resolves with the last response. Callers handle two shapes; both are deliberate (a Response is information, a socket error is not).
 - **Sockets are released** — a retryable response's body is cancelled before sleeping, so the connection returns to the pool instead of hanging open for the whole backoff.
 - **`AbortSignal` is respected** — aborting during a backoff rejects immediately with the signal's reason, and caller-initiated aborts are never retried.
+- **Stream bodies are not replayed** — a `ReadableStream` request body can be consumed exactly once, so requests with one are never retried: a retryable response is returned as-is and a network error is thrown as-is. Use string / `Blob` / `ArrayBuffer` / `URLSearchParams` bodies when you want retries on POSTs.
+
+## `onRetry` errors
+
+HTTP-triggered retries pass a `RetryError`: an `Error` whose `message` is `HTTP <status>` and which carries the numeric status:
+
+```ts
+onRetry: (error, attempt, delayMs) => {
+  if (error instanceof Error && 'status' in error && error.status === 429) {
+    metrics.rateLimited(attempt);
+  }
+}
+```
 
 ## Compatibility
 
-Requires `Promise.withResolvers` (ES2024): Node 22+, Bun, Deno, Cloudflare Workers, and browsers Chrome 119+ / Safari 17.4+ / Firefox 121+. Dual ESM/CJS builds; `types` included.
+Requires `Promise.withResolvers` (ES2024): Node 22+, Bun, Deno, Cloudflare Workers, and browsers Chrome 119+ / Safari 17.4+ / Firefox 121+. Dual ESM/CJS builds; types included.
 
 ## Comparison
 

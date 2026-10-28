@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fetchRetry } from './index';
+import { fetchRetry } from './index.js';
 
 const URL_UNDER_TEST = 'https://api.example.com/';
 
@@ -12,6 +12,15 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
+
+function streamBody(): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('payload'));
+      controller.close();
+    },
+  });
+}
 
 describe('fetchRetry', () => {
   it('resolves immediately on HTTP 200 without retrying', async () => {
@@ -66,19 +75,30 @@ describe('fetchRetry', () => {
       .mockResolvedValueOnce(new Response('Rate Limited', { status: 429, headers: { 'retry-after': '0.05' } }))
       .mockResolvedValueOnce(new Response('Success', { status: 200 }));
     vi.stubGlobal('fetch', mockFetch);
-    const observed: Array<{ message: string; attempt: number; delay: number }> = [];
+    const retried: Array<{ error: unknown; attempt: number; delay: number }> = [];
 
     const promise = fetchRetry(URL_UNDER_TEST, {}, {
       retries: 1,
-      onRetry: (error, attempt, delay) => observed.push({ message: (error as Error).message, attempt, delay }),
+      onRetry: (error: unknown, attempt: number, delay: number) => retried.push({ error, attempt, delay }),
     });
     await vi.advanceTimersByTimeAsync(50);
     await promise;
 
-    expect(observed).toEqual([{ message: 'HTTP 429', attempt: 1, delay: 50 }]);
+    expect(retried).toHaveLength(1);
+    expect(retried[0].attempt).toBe(1);
+    expect(retried[0].delay).toBe(50);
+    const error = retried[0].error;
+    expect(error).toBeInstanceOf(Error);
+    const retryError =
+      error instanceof Error && 'status' in error && typeof error.status === 'number' ? error : undefined;
+    expect(retryError?.message).toBe('HTTP 429');
+    expect(retryError?.status).toBe(429);
   });
 
   it('parses Retry-After HTTP-dates', async () => {
+    // Pin the clock: toUTCString() truncates sub-second precision, so an
+    // unpinned Date.now() makes the observed delay (and this assertion) flaky.
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
     const retryAt = new Date(Date.now() + 2000).toUTCString();
     const mockFetch = vi
       .fn()
@@ -89,16 +109,14 @@ describe('fetchRetry', () => {
 
     const promise = fetchRetry(URL_UNDER_TEST, {}, {
       retries: 1,
-      onRetry: (_error, _attempt, delay) => {
+      onRetry: (_error: unknown, _attempt: number, delay: number) => {
         delays.push(delay);
       },
     });
-    await vi.advanceTimersByTimeAsync(2000);
+    await vi.runAllTimersAsync();
     await promise;
 
-    // toUTCString() truncates to whole seconds, so the computed delay is in (1500, 2000].
-    expect(delays[0]).toBeGreaterThan(1500);
-    expect(delays[0]).toBeLessThanOrEqual(2000);
+    expect(delays).toEqual([2000]);
   });
 
   it('clamps oversized Retry-After values to maxDelayMs', async () => {
@@ -112,7 +130,7 @@ describe('fetchRetry', () => {
     const promise = fetchRetry(URL_UNDER_TEST, {}, {
       retries: 1,
       maxDelayMs: 50,
-      onRetry: (_error, _attempt, delay) => {
+      onRetry: (_error: unknown, _attempt: number, delay: number) => {
         delays.push(delay);
       },
     });
@@ -163,6 +181,25 @@ describe('fetchRetry', () => {
     // the backoff sleep rejects with the signal's reason.
     controller.abort();
     await expect(promise).rejects.toThrow();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the retryable response without retrying when the body is a stream', async () => {
+    const mockFetch = vi.fn().mockResolvedValue(new Response('Slow down', { status: 503 }));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const res = await fetchRetry(URL_UNDER_TEST, { method: 'POST', body: streamBody() }, { retries: 5 });
+    expect(res.status).toBe(503);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws the original network error without retrying when the body is a stream', async () => {
+    const mockFetch = vi.fn().mockRejectedValue(new Error('Connection Reset'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    await expect(
+      fetchRetry(URL_UNDER_TEST, { method: 'POST', body: streamBody() }, { retries: 5 })
+    ).rejects.toThrow('Connection Reset');
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });
