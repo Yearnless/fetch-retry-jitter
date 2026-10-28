@@ -44,7 +44,7 @@
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/noble2I/fetch-retry-jitter.git"
+    "url": "git+https://github.com/Yearnless/fetch-retry-jitter.git"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
